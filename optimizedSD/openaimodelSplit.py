@@ -508,16 +508,23 @@ class UNetModelEncode(nn.Module):
                         #num_heads = 1
                         dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
                     layers.append(
-                        AttentionBlock(
+                        SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
+                        )
+                        if use_spatial_transformer
+                        else AttentionBlock(
                             ch,
                             use_checkpoint=use_checkpoint,
                             num_heads=num_heads,
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
-                        ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
                         )
                     )
+
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
@@ -563,15 +570,21 @@ class UNetModelEncode(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
-            AttentionBlock(
+            SpatialTransformer(
+                ch,
+                num_heads,
+                dim_head,
+                depth=transformer_depth,
+                context_dim=context_dim,
+            )
+            if use_spatial_transformer
+            else AttentionBlock(
                 ch,
                 use_checkpoint=use_checkpoint,
                 num_heads=num_heads,
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
-            ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
-                        ),
+            ),
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -581,6 +594,7 @@ class UNetModelEncode(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
         )
+
         self._feature_size += ch
 
     def forward(self, x, timesteps=None, context=None, y=None,**kwargs):
@@ -608,7 +622,7 @@ class UNetModelEncode(nn.Module):
             h = module(h, emb, context)
             hs.append(h)
         h = self.middle_block(h, emb, context)
-        
+
         return h, emb, hs
 
 
@@ -745,21 +759,28 @@ class UNetModelDecode(nn.Module):
                         #num_heads = 1
                         dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
                     layers.append(
-                        AttentionBlock(
+                        SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
+                        )
+                        if use_spatial_transformer
+                        else AttentionBlock(
                             ch,
                             use_checkpoint=use_checkpoint,
                             num_heads=num_heads_upsample,
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
-                        ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
                         )
                     )
+
                 if level and i == num_res_blocks:
                     out_ch = ch
                     layers.append(
                         ResBlock(
-                            ch,
+                            out_ch,
                             time_embed_dim,
                             dropout,
                             out_channels=out_ch,
@@ -769,8 +790,11 @@ class UNetModelDecode(nn.Module):
                             up=True,
                         )
                         if resblock_updown
-                        else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
+                        else Upsample(
+                            out_ch, conv_resample, dims=dims, out_channels=out_ch
+                        )
                     )
+
                     ds //= 2
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
@@ -796,12 +820,9 @@ class UNetModelDecode(nn.Module):
         :param y: an [N] Tensor of labels, if class-conditional.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        
+
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
         h = h.type(tp)
-        if self.predict_codebook_ids:
-            return self.id_predictor(h)
-        else:
-            return self.out(h)
+        return self.id_predictor(h) if self.predict_codebook_ids else self.out(h)

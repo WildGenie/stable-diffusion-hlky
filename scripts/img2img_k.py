@@ -205,7 +205,7 @@ def main():
     )
 
     opt = parser.parse_args()
-    
+
     accelerator = accelerate.Accelerator()
     device = accelerator.device
     seed_everything(opt.seed)
@@ -214,7 +214,7 @@ def main():
 
     config = OmegaConf.load(f"{opt.config}")
     model = load_model_from_config(config, f"{opt.ckpt}")
-    
+
     model_wrap = K.external.CompVisDenoiser(model)
     sigma_min, sigma_max = model_wrap.sigmas[0].item(), model_wrap.sigmas[-1].item()
 
@@ -254,8 +254,8 @@ def main():
         with precision_scope("cuda"):
             with model.ema_scope():
                 tic = time.time()
-                all_samples = list()
-                for n in trange(opt.n_iter, desc="Sampling", disable=not accelerator.is_main_process):
+                all_samples = []
+                for _ in trange(opt.n_iter, desc="Sampling", disable=not accelerator.is_main_process):
                     for prompts in tqdm(data, desc="data", disable=not accelerator.is_main_process):
                         uc = None
                         if opt.scale != 1.0:
@@ -284,7 +284,7 @@ def main():
                                 Image.fromarray(x_sample.astype(np.uint8)).save(
                                     os.path.join(sample_path, f"{base_count:05}.png"))
                                 base_count += 1
-                                
+
                         if accelerator.is_main_process and not opt.skip_grid:
                             all_samples.append(x_samples_ddim)
 

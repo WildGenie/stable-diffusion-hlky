@@ -137,11 +137,7 @@ def dream(prompt: str, ddim_steps: int, plms: bool, fixed_code: bool, ddim_eta: 
 
     rng_seed = seed_everything(seed)
 
-    if plms:
-        sampler = PLMSSampler(model)
-    else:
-        sampler = DDIMSampler(model)
-
+    sampler = PLMSSampler(model) if plms else DDIMSampler(model)
     opt.outdir = "outputs/txt2img-samples"
 
     os.makedirs(opt.outdir, exist_ok=True)
@@ -174,8 +170,8 @@ def dream(prompt: str, ddim_steps: int, plms: bool, fixed_code: bool, ddim_eta: 
         with precision_scope("cuda"):
             with model.ema_scope():
                 tic = time.time()
-                all_samples = list()
-                for n in trange(n_iter, desc="Sampling"):
+                all_samples = []
+                for _ in trange(n_iter, desc="Sampling"):
                     for prompts in tqdm(data, desc="data"):
                         uc = None
                         if cfg_scale != 1.0:
@@ -277,8 +273,8 @@ def translation(prompt: str, init_img, ddim_steps: int, ddim_eta: float, n_iter:
             print(f"target t_enc is {t_enc} steps")
             with model.ema_scope():
                 tic = time.time()
-                all_samples = list()
-                for n in trange(n_iter, desc="Sampling"):
+                all_samples = []
+                for _ in trange(n_iter, desc="Sampling"):
                     for prompts in tqdm(data, desc="data"):
                         uc = None
                         if cfg_scale != 1.0:
