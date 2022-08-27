@@ -167,17 +167,10 @@ class FirstStage(DDPM):
 
         z = 1. / self.scale_factor * z
 
-        if hasattr(self, "split_input_params"):
-            if isinstance(self.first_stage_model, VQModelInterface):
-                return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
-            else:
-                return self.first_stage_model.decode(z)
-
+        if isinstance(self.first_stage_model, VQModelInterface):
+            return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
         else:
-            if isinstance(self.first_stage_model, VQModelInterface):
-                return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
-            else:
-                return self.first_stage_model.decode(z)
+            return self.first_stage_model.decode(z)
 
 
 class CondStage(DDPM):
@@ -221,25 +214,25 @@ class CondStage(DDPM):
             self.restarted_from_ckpt = True
 
     def instantiate_cond_stage(self, config):
-        if not self.cond_stage_trainable:
-            if config == "__is_first_stage__":
-                print("Using first stage also as cond stage.")
-                self.cond_stage_model = self.first_stage_model
-            elif config == "__is_unconditional__":
-                print(f"Training {self.__class__.__name__} as an unconditional model.")
-                self.cond_stage_model = None
-                # self.be_unconditional = True
-            else:
-                model = instantiate_from_config(config)
-                self.cond_stage_model = model.eval()
-                self.cond_stage_model.train = disabled_train
-                for param in self.cond_stage_model.parameters():
-                    param.requires_grad = False
-        else:
+        if self.cond_stage_trainable:
             assert config != '__is_first_stage__'
             assert config != '__is_unconditional__'
             model = instantiate_from_config(config)
             self.cond_stage_model = model
+
+        elif config == "__is_first_stage__":
+            print("Using first stage also as cond stage.")
+            self.cond_stage_model = self.first_stage_model
+        elif config == "__is_unconditional__":
+            print(f"Training {self.__class__.__name__} as an unconditional model.")
+            self.cond_stage_model = None
+            # self.be_unconditional = True
+        else:
+            model = instantiate_from_config(config)
+            self.cond_stage_model = model.eval()
+            self.cond_stage_model.train = disabled_train
+            for param in self.cond_stage_model.parameters():
+                param.requires_grad = False
 
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
@@ -260,8 +253,7 @@ class DiffusionWrapper(pl.LightningModule):
         self.diffusion_model = instantiate_from_config(diff_model_config)
 
     def forward(self, x, t, cc):
-        out = self.diffusion_model(x, t, context=cc)
-        return out
+        return self.diffusion_model(x, t, context=cc)
 
 class DiffusionWrapperOut(pl.LightningModule):
     def __init__(self, diff_model_config):
@@ -345,15 +337,13 @@ class UNet(DDPM):
 
 
     def apply_model(self, x_noisy, t, cond, return_ids=False):
-          
+      
 
         self.model1.to("cuda")
-        step = 1
-        if self.small_batch:
-            step = 2
-        h,emb,hs = self.model1(x_noisy[0:step], t[:step], cond[:step])
+        step = 2 if self.small_batch else 1
+        h,emb,hs = self.model1(x_noisy[:step], t[:step], cond[:step])
         bs = cond.shape[0]
-        
+
         assert bs%2 == 0
         lenhs = len(hs)
 
@@ -366,7 +356,7 @@ class UNet(DDPM):
 
         self.model1.to("cpu")
         self.model2.to("cuda")
-        
+
         hs_temp = [hs[j][:step] for j in range(lenhs)]
         x_recon = self.model2(h[:step],emb[:step],x_noisy.dtype,hs_temp,cond[:step])
 
@@ -378,16 +368,12 @@ class UNet(DDPM):
 
         self.model2.to("cpu")
 
-        if isinstance(x_recon, tuple) and not return_ids:
-            return x_recon[0]
-        else:
-            return x_recon
+        return x_recon[0] if isinstance(x_recon, tuple) and not return_ids else x_recon
 
     def register_buffer1(self, name, attr):
-            if type(attr) == torch.Tensor:
-                if attr.device != torch.device("cuda"):
-                    attr = attr.to(torch.device("cuda"))
-            setattr(self, name, attr)
+        if type(attr) == torch.Tensor and attr.device != torch.device("cuda"):
+            attr = attr.to(torch.device("cuda"))
+        setattr(self, name, attr)
 
     def make_schedule(self, ddim_num_steps, ddim_discretize="uniform", ddim_eta=0., verbose=True):
         if ddim_eta != 0:
@@ -446,9 +432,8 @@ class UNet(DDPM):
                 cbs = conditioning[list(conditioning.keys())[0]].shape[0]
                 if cbs != batch_size:
                     print(f"Warning: Got {cbs} conditionings but batch-size is {batch_size}")
-            else:
-                if conditioning.shape[0] != batch_size:
-                    print(f"Warning: Got {conditioning.shape[0]} conditionings but batch-size is {batch_size}")
+            elif conditioning.shape[0] != batch_size:
+                print(f"Warning: Got {conditioning.shape[0]} conditionings but batch-size is {batch_size}")
 
         # self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=verbose)
 
@@ -456,23 +441,24 @@ class UNet(DDPM):
         C, H, W = shape
         size = (batch_size, C, H, W)
         print(f'Data shape for PLMS sampling is {size}')
-        samples = self.plms_sampling(conditioning, size,
-                                                    callback=callback,
-                                                    img_callback=img_callback,
-                                                    quantize_denoised=quantize_x0,
-                                                    mask=mask, x0=x0,
-                                                    ddim_use_original_steps=False,
-                                                    noise_dropout=noise_dropout,
-                                                    temperature=temperature,
-                                                    score_corrector=score_corrector,
-                                                    corrector_kwargs=corrector_kwargs,
-                                                    x_T=x_T,
-                                                    log_every_t=log_every_t,
-                                                    unconditional_guidance_scale=unconditional_guidance_scale,
-                                                    unconditional_conditioning=unconditional_conditioning,
-                                                    )
-
-        return samples
+        return self.plms_sampling(
+            conditioning,
+            size,
+            callback=callback,
+            img_callback=img_callback,
+            quantize_denoised=quantize_x0,
+            mask=mask,
+            x0=x0,
+            ddim_use_original_steps=False,
+            noise_dropout=noise_dropout,
+            temperature=temperature,
+            score_corrector=score_corrector,
+            corrector_kwargs=corrector_kwargs,
+            x_T=x_T,
+            log_every_t=log_every_t,
+            unconditional_guidance_scale=unconditional_guidance_scale,
+            unconditional_conditioning=unconditional_conditioning,
+        )
 
     @torch.no_grad()
     def plms_sampling(self, cond, shape,
@@ -483,18 +469,19 @@ class UNet(DDPM):
                       unconditional_guidance_scale=1., unconditional_conditioning=None,):
         device = self.betas.device
         b = shape[0]
-        if x_T is None:
-            img = torch.randn(shape, device=device)
-        else:
-            img = x_T
-
+        img = torch.randn(shape, device=device) if x_T is None else x_T
         if timesteps is None:
             timesteps = self.num_timesteps if ddim_use_original_steps else self.ddim_timesteps
-        elif timesteps is not None and not ddim_use_original_steps:
+        elif not ddim_use_original_steps:
             subset_end = int(min(timesteps / self.ddim_timesteps.shape[0], 1) * self.ddim_timesteps.shape[0]) - 1
             timesteps = self.ddim_timesteps[:subset_end]
 
-        time_range = list(reversed(range(0,timesteps))) if ddim_use_original_steps else np.flip(timesteps)
+        time_range = (
+            list(reversed(range(timesteps)))
+            if ddim_use_original_steps
+            else np.flip(timesteps)
+        )
+
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
         print(f"Running PLMS Sampling with {total_steps} timesteps")
 
